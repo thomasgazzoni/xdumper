@@ -1,0 +1,45 @@
+[tools]
+python = "3.12"
+
+[env]
+_.python.venv = { path = ".venv", create = true }
+
+[tasks.setup]
+description = "Install package in editable mode"
+run = "pip install -e ."
+
+[tasks."setup:dev"]
+description = "Install package with dev dependencies"
+run = "pip install -e '.[dev]'"
+
+[tasks.xdumper]
+description = "Run xdumper CLI"
+run = "xdumper"
+
+[tasks."add-account"]
+description = "Add X/Twitter account with cookies"
+run = "xdumper add-account"
+
+[tasks.accounts]
+description = "List configured accounts"
+run = "xdumper accounts"
+
+[tasks.python]
+description = "Run Python interpreter"
+run = "python"
+
+[tasks.lint]
+description = "Run ruff linter"
+run = "ruff check ."
+
+[tasks.format]
+description = "Run ruff formatter"
+run = "ruff format ."
+
+[tasks.typecheck]
+description = "Run mypy type checker"
+run = "mypy xdumper"
+
+[tasks.test]
+description = "Run tests"
+run = "pytest"
