@@ -22,6 +22,16 @@ class Config:
         # Proxy URL (e.g., socks5://127.0.0.1:1080 or http://127.0.0.1:8080)
         self.proxy: str | None = os.getenv("XDUMPER_PROXY")
 
+        # Backend selection: "twscrape" (default) or "patchright"
+        self.backend: str = os.getenv("XDUMPER_BACKEND", "twscrape")
+
+        # Chrome profile path for Patchright backend
+        default_chrome_profile = str(Path.home() / ".xdumper" / "chrome-profile")
+        self.chrome_profile: str = os.getenv("XDUMPER_CHROME_PROFILE", default_chrome_profile)
+
+        # Headless mode for Patchright (default False for stealth)
+        self.headless: bool = os.getenv("XDUMPER_HEADLESS", "false").lower() == "true"
+
 
 def load_config() -> Config:
     """Load configuration from environment variables."""

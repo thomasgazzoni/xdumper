@@ -415,6 +415,168 @@ def view(
 
 
 @app.command()
+def summary(
+    url: str = typer.Argument(..., help="X/Twitter timeline URL to summarize"),
+    limit: Optional[int] = typer.Option(
+        None,
+        "--limit",
+        "-n",
+        help="Maximum number of tweets to include",
+    ),
+    oldest_first: bool = typer.Option(
+        False,
+        "--oldest-first/--newest-first",
+        help="Output oldest tweets first (default: newest first)",
+    ),
+    no_retweets: bool = typer.Option(
+        False,
+        "--no-retweets",
+        help="Exclude retweets from summary",
+    ),
+) -> None:
+    """
+    Output stored tweets in a simple text format for AI summarization.
+
+    Displays tweets with minimal formatting (username, time, text) suitable
+    for feeding into an AI chat for summary or analysis.
+
+    Examples:
+        xdumper summary "https://x.com/elonmusk"
+        xdumper summary "https://x.com/elonmusk" --limit 50 --no-retweets
+        xdumper summary "https://x.com/elonmusk" | pbcopy  # Copy to clipboard
+    """
+    from .storage import TweetStore
+    from .twitter.url_parser import parse_timeline_url
+
+    cfg = load_config()
+    store = TweetStore(cfg.store_path)
+
+    # Parse URL to get timeline key
+    try:
+        target = parse_timeline_url(url)
+    except ValueError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    # Check if we have data for this timeline
+    info = store.get_timeline_info(target.key)
+    if info is None:
+        typer.echo(f"No stored data for {url}. Run 'xdumper scrape' first.", err=True)
+        raise typer.Exit(code=1)
+
+    # Get tweets
+    order = "ASC" if oldest_first else "DESC"
+    tweets = store.get_tweets_for_timeline(target.key, limit=limit, order=order)
+
+    if not tweets:
+        typer.echo(f"No tweets stored for {url}", err=True)
+        raise typer.Exit(code=0)
+
+    # Filter retweets if requested
+    if no_retweets:
+        tweets = [t for t in tweets if not t.get("is_retweet", False)]
+
+    # Output in simple format
+    output_lines = []
+    for i, tweet in enumerate(tweets):
+        screen_name = tweet.get("screen_name", "unknown")
+        created_at = tweet.get("created_at", "")
+        text = tweet.get("text", "")
+
+        # Format timestamp to be more readable
+        if created_at:
+            try:
+                dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                time_str = dt.strftime("%Y-%m-%d %H:%M")
+            except ValueError:
+                time_str = created_at
+        else:
+            time_str = "unknown time"
+
+        # Build tweet block
+        header = f"@{screen_name} • {time_str}"
+        output_lines.append(header)
+        output_lines.append(text)
+
+        # Add separator between tweets (but not after the last one)
+        if i < len(tweets) - 1:
+            output_lines.append("")
+            output_lines.append("------")
+            output_lines.append("")
+
+    print("\n".join(output_lines))
+
+
+@app.command()
+def login(
+    url: str = typer.Option(
+        "https://x.com",
+        "--url",
+        "-u",
+        help="URL to navigate to for login",
+    ),
+) -> None:
+    """
+    Open browser for manual login (Patchright backend only).
+
+    Opens Chrome with the persistent profile so you can log in to X/Twitter.
+    The session will be saved and reused by subsequent scrape commands.
+
+    Examples:
+        xdumper login
+        xdumper login --url "https://x.com/login"
+    """
+    cfg = load_config()
+
+    if cfg.backend != "patchright":
+        typer.echo(
+            "Error: login command requires Patchright backend.\n"
+            "Set XDUMPER_BACKEND=patchright and try again.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Opening browser with profile: {cfg.chrome_profile}", err=True)
+    typer.echo("Log in to X/Twitter, then close the browser window when done.", err=True)
+    typer.echo("", err=True)
+
+    async def do_login() -> None:
+        from patchright.async_api import async_playwright
+
+        Path(cfg.chrome_profile).mkdir(parents=True, exist_ok=True)
+
+        playwright = await async_playwright().start()
+        try:
+            context = await playwright.chromium.launch_persistent_context(
+                user_data_dir=cfg.chrome_profile,
+                channel="chrome",
+                headless=False,  # Always show browser for login
+                no_viewport=True,
+            )
+
+            page = context.pages[0] if context.pages else await context.new_page()
+            await page.goto(url)
+
+            typer.echo("Browser opened. Close it when you're done logging in.", err=True)
+
+            # Wait for browser to be closed by user
+            await context.wait_for_event("close", timeout=0)
+
+        finally:
+            await playwright.stop()
+
+    try:
+        asyncio.run(do_login())
+        typer.echo("\nSession saved! You can now use 'xdumper scrape' commands.", err=True)
+    except KeyboardInterrupt:
+        typer.echo("\nInterrupted", err=True)
+        raise typer.Exit(code=130)
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command()
 def version() -> None:
     """Show version information."""
     from . import __version__

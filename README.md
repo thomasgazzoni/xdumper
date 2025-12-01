@@ -21,9 +21,58 @@ mise install
 mise run setup
 ```
 
-## Authentication
+## Backends
 
-xdumper uses browser cookies for authentication - no email password required.
+xdumper supports two backends for fetching tweets:
+
+| Backend | Description | Auth Method |
+|---------|-------------|-------------|
+| `twscrape` (default) | Uses twscrape library | Browser cookies |
+| `patchright` | Browser automation with bot detection evasion | Browser login |
+
+Set backend via environment variable:
+```bash
+export XDUMPER_BACKEND=patchright  # or twscrape (default)
+```
+
+---
+
+## Patchright Backend (Recommended)
+
+Uses [Patchright](https://github.com/AuroraWright/patchright-python) (stealth-patched Playwright) for browser automation with bot detection evasion.
+
+### Login
+
+Open browser to log in to X/Twitter. Session is saved to the Chrome profile.
+
+```bash
+mise run xdumper login
+```
+
+Once logged in, close the browser. Your session persists for future scraping.
+
+### Scrape
+
+```bash
+# Scrape tweets (uses saved session)
+mise run xdumper scrape "https://x.com/elonmusk" --limit 50
+
+# Scrape a list
+mise run xdumper scrape "https://x.com/i/lists/1409181262510690310"
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `XDUMPER_CHROME_PROFILE` | `~/.xdumper/chrome-profile` | Chrome profile directory |
+| `XDUMPER_HEADLESS` | `false` | Run browser headless (not recommended) |
+
+---
+
+## Twscrape Backend (Default)
+
+Uses browser cookies for authentication - no email password required.
 
 ### Get cookies from your browser
 
@@ -123,10 +172,12 @@ mise tasks
 
 | Command | Description |
 |---------|-------------|
-| `xdumper add-account` | Add account with cookies |
-| `xdumper accounts` | List accounts |
+| `xdumper login` | Open browser for login (Patchright backend only) |
+| `xdumper add-account` | Add account with cookies (Twscrape backend) |
+| `xdumper accounts` | List accounts (Twscrape backend) |
 | `xdumper scrape <url>` | Scrape tweets from a list or user URL |
-| `xdumper view <url>` | View stored tweets from database |
+| `xdumper view <url>` | View stored tweets as JSON |
+| `xdumper summary <url>` | View stored tweets as plain text (for AI summarization) |
 | `xdumper version` | Show version info |
 
 ### Options for `scrape`
@@ -149,14 +200,46 @@ mise tasks
 | `--oldest-first` | | Output oldest tweets first |
 | `--thread` | `-t` | View a specific thread by conversation ID |
 
+### Options for `summary`
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--limit` | `-n` | Maximum tweets to include |
+| `--oldest-first/--newest-first` | | Order of tweets (default: newest first) |
+| `--no-retweets` | | Exclude retweets from output |
+
+### Summary output example
+
+```
+xdumper summary "https://x.com/elonmusk" --limit 3 --no-retweets
+```
+
+```
+@elonmusk • 2025-11-28 05:08
+Nothing else matters if birth rate is far below replacement rate
+
+------
+
+@elonmusk • 2025-11-28 05:07
+Wow
+
+------
+
+@elonmusk • 2025-11-28 04:55
+Great work by the team!
+```
+
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `XDUMPER_DB` | `~/.xdumper/accounts.db` | Path to accounts database |
+| `XDUMPER_BACKEND` | `twscrape` | Backend to use (`twscrape` or `patchright`) |
+| `XDUMPER_DB` | `~/.xdumper/accounts.db` | Path to accounts database (twscrape) |
 | `XDUMPER_STORE` | `~/.xdumper/tweets.db` | Path to tweet storage database |
 | `XDUMPER_LOG_LEVEL` | `WARNING` | Log level (DEBUG, INFO, WARNING, ERROR) |
 | `XDUMPER_PROXY` | | Proxy URL (e.g., `socks5://127.0.0.1:1080`) |
+| `XDUMPER_CHROME_PROFILE` | `~/.xdumper/chrome-profile` | Chrome profile directory (patchright) |
+| `XDUMPER_HEADLESS` | `false` | Run browser headless (patchright) |
 
 ## Output Format
 

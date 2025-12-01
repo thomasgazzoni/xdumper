@@ -77,6 +77,7 @@ dmypy.json
 # database
 accounts.db
 tweets.db
+data/chrome_profile/
 
 # Twikit cookies
 cookies.json
