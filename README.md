@@ -39,7 +39,7 @@ export XDUMPER_BACKEND=patchright  # or twscrape (default)
 
 ## Patchright Backend (Recommended)
 
-Uses [Patchright](https://github.com/AuroraWright/patchright-python) (stealth-patched Playwright) for browser automation with bot detection evasion.
+Uses [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python) (stealth-patched Playwright) for browser automation with bot detection evasion.
 
 ### Login
 
@@ -109,7 +109,7 @@ mise run accounts
 
 ### Scrape tweets
 
-Supports both list and user profile URLs. Tweets are stored locally in SQLite to avoid re-scraping.
+Supports list, user profile, and thread URLs. Tweets are stored locally in SQLite to avoid re-scraping.
 
 ```bash
 # Scrape a list
@@ -118,11 +118,11 @@ mise run xdumper scrape "https://x.com/i/lists/1409181262510690310"
 # Scrape a user profile
 mise run xdumper scrape "https://x.com/elonmusk"
 
+# Scrape a thread (conversation)
+mise run xdumper scrape "https://x.com/letz_ai/status/1993362758054580609"
+
 # Limit number of tweets
 mise run xdumper scrape "https://x.com/elonmusk" --limit 50
-
-# Limit by pages (each page ~20 tweets)
-mise run xdumper scrape "https://x.com/elonmusk" --pages 5
 
 # Fetch older tweets up to 7 days ago
 mise run xdumper scrape "https://x.com/elonmusk" --old 7d
@@ -136,6 +136,8 @@ mise run xdumper scrape "https://x.com/elonmusk" --no-store
 # Save to file
 mise run xdumper scrape "https://x.com/elonmusk" -n 100 -q > tweets.jsonl
 ```
+
+**Thread scraping**: When you provide a tweet URL (`/status/ID`), xdumper fetches the full thread from that tweet's author (replies from other users are excluded).
 
 ### View stored tweets
 
@@ -175,9 +177,8 @@ mise tasks
 | `xdumper login` | Open browser for login (Patchright backend only) |
 | `xdumper add-account` | Add account with cookies (Twscrape backend) |
 | `xdumper accounts` | List accounts (Twscrape backend) |
-| `xdumper scrape <url>` | Scrape tweets from a list or user URL |
-| `xdumper view <url>` | View stored tweets as JSON |
-| `xdumper summary <url>` | View stored tweets as plain text (for AI summarization) |
+| `xdumper scrape <url>` | Scrape tweets from list, user, or thread URL |
+| `xdumper view <url>` | View stored tweets (JSON or plain text) |
 | `xdumper version` | Show version info |
 
 ### Options for `scrape`
@@ -185,11 +186,16 @@ mise tasks
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--limit` | `-n` | Maximum tweets to scrape |
-| `--pages` | | Maximum pages to fetch (default: 10) |
 | `--old` | | Fetch older tweets up to duration (e.g., '7d', '24h') |
+| `--expand-threads` | `-e` | Auto-fetch full threads when detecting self-thread tweets |
 | `--pretty` | `-p` | Pretty-print JSON output |
 | `--no-store` | | Don't store tweets to database |
 | `--quiet` | `-q` | Suppress progress messages |
+| `--verbose` | `-v` | Show detailed progress |
+
+Without `--limit` or `--old`, scraping continues until cached tweets or end of timeline.
+
+**Thread expansion**: When `--expand-threads` is enabled, xdumper detects self-thread tweets (where the user replies to their own tweet) and fetches the full thread from the API. The output includes an `is_self_thread` field to identify thread tweets.
 
 ### Options for `view`
 
@@ -197,37 +203,33 @@ mise tasks
 |--------|-------|-------------|
 | `--limit` | `-n` | Maximum tweets to output |
 | `--pretty` | `-p` | Pretty-print JSON output |
+| `--summary` | `-s` | Output as plain text for AI summarization |
 | `--oldest-first` | | Output oldest tweets first |
-| `--thread` | `-t` | View a specific thread by conversation ID |
-
-### Options for `summary`
-
-| Option | Short | Description |
-|--------|-------|-------------|
-| `--limit` | `-n` | Maximum tweets to include |
-| `--oldest-first/--newest-first` | | Order of tweets (default: newest first) |
 | `--no-retweets` | | Exclude retweets from output |
+| `--thread` | `-t` | View a specific thread by conversation ID |
 
 ### Summary output example
 
 ```
-xdumper summary "https://x.com/elonmusk" --limit 3 --no-retweets
+xdumper view "https://x.com/elonmusk" --summary --limit 3 --no-retweets
 ```
 
 ```
-@elonmusk • 2025-11-28 05:08
+@elonmusk @ 2025-11-28 05:08 - https://x.com/elonmusk/status/1234567890
 Nothing else matters if birth rate is far below replacement rate
 
 ------
 
-@elonmusk • 2025-11-28 05:07
-Wow
+@elonmusk @ 2025-11-28 05:07 - 🧵 https://x.com/elonmusk/status/1234567891
+Wow, this is amazing!
 
 ------
 
-@elonmusk • 2025-11-28 04:55
+@elonmusk @ 2025-11-28 04:55 - 🧵 https://x.com/elonmusk/status/1234567891
 Great work by the team!
 ```
+
+For thread tweets, a 🧵 emoji is shown and the URL points to the main/first tweet of the thread.
 
 ## Environment Variables
 

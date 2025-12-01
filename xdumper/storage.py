@@ -73,6 +73,8 @@ class TweetStore:
                     is_retweet INTEGER NOT NULL DEFAULT 0,
                     is_quote INTEGER NOT NULL DEFAULT 0,
                     has_media INTEGER NOT NULL DEFAULT 0,
+                    is_self_thread INTEGER NOT NULL DEFAULT 0,
+                    is_thread_starter INTEGER NOT NULL DEFAULT 0,
                     text TEXT NOT NULL,
                     raw BLOB NOT NULL,             -- JSON blob of full tweet data
                     stored_at TEXT NOT NULL,       -- When we stored this tweet
@@ -86,6 +88,15 @@ class TweetStore:
                 CREATE INDEX IF NOT EXISTS idx_tweets_conversation_id ON tweets(conversation_id);
                 CREATE INDEX IF NOT EXISTS idx_tweets_in_reply_to_id ON tweets(in_reply_to_id);
             """)
+
+            # Schema migration: add is_self_thread and is_thread_starter columns if missing
+            cursor = conn.execute("PRAGMA table_info(tweets)")
+            columns = {row[1] for row in cursor.fetchall()}
+            if "is_self_thread" not in columns:
+                conn.execute("ALTER TABLE tweets ADD COLUMN is_self_thread INTEGER NOT NULL DEFAULT 0")
+            if "is_thread_starter" not in columns:
+                conn.execute("ALTER TABLE tweets ADD COLUMN is_thread_starter INTEGER NOT NULL DEFAULT 0")
+
             conn.commit()
 
     def get_timeline_info(self, key: str) -> dict[str, Any] | None:
@@ -202,8 +213,9 @@ class TweetStore:
                 """
                 INSERT OR IGNORE INTO tweets
                 (id, timeline_key, created_at, user_id, screen_name, conversation_id,
-                 in_reply_to_id, is_retweet, is_quote, has_media, text, raw, stored_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 in_reply_to_id, is_retweet, is_quote, has_media, is_self_thread,
+                 is_thread_starter, text, raw, stored_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     tweet.id,
@@ -216,6 +228,8 @@ class TweetStore:
                     1 if tweet.is_retweet else 0,
                     1 if tweet.is_quote else 0,
                     1 if tweet.has_media else 0,
+                    1 if tweet.is_self_thread else 0,
+                    1 if tweet.is_thread_starter else 0,
                     tweet.text,
                     raw_blob,
                     now,
@@ -245,7 +259,7 @@ class TweetStore:
             query = f"""
                 SELECT id, timeline_key, created_at, user_id, screen_name,
                        conversation_id, in_reply_to_id, is_retweet, is_quote,
-                       has_media, text, raw, stored_at
+                       has_media, is_self_thread, is_thread_starter, text, raw, stored_at
                 FROM tweets
                 WHERE timeline_key = ?
                 ORDER BY created_at {order}
@@ -263,6 +277,8 @@ class TweetStore:
                 d["is_retweet"] = bool(d["is_retweet"])
                 d["is_quote"] = bool(d["is_quote"])
                 d["has_media"] = bool(d["has_media"])
+                d["is_self_thread"] = bool(d.get("is_self_thread", 0))
+                d["is_thread_starter"] = bool(d.get("is_thread_starter", 0))
                 result.append(d)
             return result
 
@@ -308,7 +324,7 @@ class TweetStore:
                 """
                 SELECT id, timeline_key, created_at, user_id, screen_name,
                        conversation_id, in_reply_to_id, is_retweet, is_quote,
-                       has_media, text, raw, stored_at
+                       has_media, is_self_thread, is_thread_starter, text, raw, stored_at
                 FROM tweets
                 WHERE conversation_id = ?
                 ORDER BY created_at ASC
@@ -322,5 +338,7 @@ class TweetStore:
                 d["is_retweet"] = bool(d["is_retweet"])
                 d["is_quote"] = bool(d["is_quote"])
                 d["has_media"] = bool(d["has_media"])
+                d["is_self_thread"] = bool(d.get("is_self_thread", 0))
+                d["is_thread_starter"] = bool(d.get("is_thread_starter", 0))
                 result.append(d)
             return result

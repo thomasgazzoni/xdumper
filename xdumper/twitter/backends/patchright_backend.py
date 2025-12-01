@@ -45,6 +45,7 @@ class PatchrightBackend(TimelineBackend):
     # GraphQL endpoints we care about
     _LIST_ENDPOINTS = ("ListLatestTweetsTimeline", "ListTimeline")
     _USER_ENDPOINTS = ("UserTweets", "UserTweetsAndReplies")
+    _THREAD_ENDPOINTS = ("TweetDetail",)
     _USER_BY_SCREEN_NAME = "UserByScreenName"
 
     def __init__(
@@ -148,6 +149,186 @@ class PatchrightBackend(TimelineBackend):
         async for tweet in self._scrape_timeline(url, self._USER_ENDPOINTS, limit):
             yield tweet
 
+    async def iter_thread(
+        self,
+        tweet_id: str,
+        limit: int | None = None,
+    ) -> AsyncIterator[InternalTweet]:
+        """
+        Yield tweets from a conversation thread, oldest first.
+
+        Navigates to the tweet URL and intercepts the TweetDetail response
+        to get the full conversation.
+
+        Args:
+            tweet_id: The tweet ID to fetch the thread for
+            limit: Maximum tweets to yield
+
+        Yields:
+            InternalTweet objects in chronological order
+        """
+        context = await self._ensure_browser()
+        page = await context.new_page()
+
+        tweets: list[InternalTweet] = []
+
+        async def handle_response(response: Response) -> None:
+            """Intercept TweetDetail response."""
+            if "/i/api/graphql/" not in response.url:
+                return
+
+            match = re.search(r"/graphql/[^/]+/([^?]+)", response.url)
+            if not match:
+                return
+
+            endpoint = match.group(1)
+            if endpoint not in self._THREAD_ENDPOINTS:
+                return
+
+            _debug(f"Matched thread endpoint: {endpoint}")
+
+            try:
+                if not response.ok:
+                    return
+
+                data = await response.json()
+                thread_tweets = self._extract_thread_from_response(data)
+                _debug(f"Extracted {len(thread_tweets)} tweets from thread")
+                tweets.extend(thread_tweets)
+            except Exception as e:
+                _debug(f"Error processing thread response: {e}")
+
+        page.on("response", handle_response)
+
+        try:
+            # Navigate to tweet URL - any user works, we just need the tweet_id
+            url = f"https://x.com/i/status/{tweet_id}"
+            _debug(f"Navigating to {url}")
+
+            async with page.expect_response(
+                lambda r: "/i/api/graphql/" in r.url and "TweetDetail" in r.url,
+                timeout=30000,
+            ):
+                await page.goto(url, wait_until="domcontentloaded")
+
+            # Wait for response processing
+            await asyncio.sleep(_random_delay(2.0, 3.0))
+
+            if not tweets:
+                return
+
+            # Get the original author (first tweet's author)
+            # All tweets should share the same conversation_id as the requested tweet
+            original_author = tweets[0].user_id
+
+            # Filter to only include tweets from the original author (the actual thread)
+            thread_tweets = [t for t in tweets if t.user_id == original_author]
+
+            # Sort by created_at (oldest first for threads)
+            thread_tweets.sort(key=lambda t: t.created_at)
+
+            _debug(f"Filtered to {len(thread_tweets)} tweets from original author")
+
+            # Yield tweets
+            yielded = 0
+            for tweet in thread_tweets:
+                yield tweet
+                yielded += 1
+                if limit is not None and yielded >= limit:
+                    return
+
+        finally:
+            await page.close()
+
+    def _extract_thread_from_response(
+        self,
+        data: dict[str, Any],
+    ) -> list[InternalTweet]:
+        """
+        Extract tweets from TweetDetail response.
+
+        The TweetDetail response contains the conversation in
+        'threaded_conversation_with_injections_v2' with instructions and entries.
+        """
+        tweets: list[InternalTweet] = []
+
+        try:
+            # Get instructions from threaded_conversation_with_injections_v2
+            instructions = (
+                data.get("data", {})
+                .get("threaded_conversation_with_injections_v2", {})
+                .get("instructions", [])
+            )
+
+            _debug(f"Found {len(instructions)} instructions in thread response")
+
+            for instruction in instructions:
+                entries = instruction.get("entries", [])
+
+                for entry in entries:
+                    entry_id = entry.get("entryId", "")
+
+                    # Skip cursor entries
+                    if entry_id.startswith("cursor-"):
+                        continue
+
+                    content = entry.get("content", {})
+                    content_type = content.get("entryType") or content.get("__typename", "")
+
+                    # Handle TimelineTimelineItem (single tweet)
+                    if content_type == "TimelineTimelineItem":
+                        item_content = content.get("itemContent", {})
+                        tweet = self._extract_tweet_from_item_content(item_content)
+                        if tweet and not any(t.id == tweet.id for t in tweets):
+                            tweets.append(tweet)
+
+                    # Handle TimelineTimelineModule (conversation group)
+                    elif content_type == "TimelineTimelineModule":
+                        items = content.get("items", [])
+                        for item in items:
+                            item_content = item.get("item", {}).get("itemContent", {})
+                            if not item_content:
+                                item_content = item.get("itemContent", {})
+
+                            tweet = self._extract_tweet_from_item_content(item_content)
+                            if tweet and not any(t.id == tweet.id for t in tweets):
+                                tweets.append(tweet)
+
+        except Exception as e:
+            _debug(f"Exception in _extract_thread_from_response: {e}")
+
+        return tweets
+
+    def _extract_tweet_from_item_content(
+        self,
+        item_content: dict[str, Any],
+    ) -> InternalTweet | None:
+        """Extract a tweet from itemContent dict."""
+        try:
+            item_type = item_content.get("itemType") or item_content.get("__typename", "")
+
+            if item_type != "TimelineTweet":
+                return None
+
+            tweet_results = item_content.get("tweet_results", {})
+            result = tweet_results.get("result", {})
+
+            typename = result.get("__typename", "")
+            if typename == "TweetWithVisibilityResults":
+                result = result.get("tweet", {})
+                typename = result.get("__typename", "")
+
+            if typename == "TweetTombstone":
+                return None
+
+            if result and typename == "Tweet":
+                return self._convert_graphql_tweet(result)
+
+        except Exception as e:
+            _debug(f"Error extracting tweet from item content: {e}")
+
+        return None
+
     async def get_user_id(self, screen_name: str) -> str:
         """
         Resolve screen_name to numeric user ID.
@@ -213,7 +394,7 @@ class PatchrightBackend(TimelineBackend):
         page = await context.new_page()
 
         # Queue for tweets from response handler
-        tweet_queue: asyncio.Queue[InternalTweet] = asyncio.Queue()
+        tweet_queue: asyncio.Queue[InternalTweet | None] = asyncio.Queue()
         seen_ids: set[str] = set()
 
         async def handle_response(response: Response) -> None:
@@ -245,10 +426,15 @@ class PatchrightBackend(TimelineBackend):
                 tweets = self._extract_tweets_from_response(data, endpoint)
                 _debug(f"Extracted {len(tweets)} tweets from response")
 
-                for tweet in tweets:
-                    if tweet.id not in seen_ids:
-                        seen_ids.add(tweet.id)
-                        await tweet_queue.put(tweet)
+                if not tweets:
+                    # Signal end of timeline - API returned 0 tweets
+                    _debug("API returned 0 tweets, signaling end of timeline")
+                    await tweet_queue.put(None)
+                else:
+                    for tweet in tweets:
+                        if tweet.id not in seen_ids:
+                            seen_ids.add(tweet.id)
+                            await tweet_queue.put(tweet)
             except Exception as e:
                 _debug(f"Error processing response: {e}")
 
@@ -286,21 +472,34 @@ class PatchrightBackend(TimelineBackend):
 
             yielded_count = 0
             consecutive_empty = 0
-            max_consecutive_empty = 5
+            max_consecutive_empty = 5  # Allow more retries for slow-loading content
+            end_of_timeline = False
 
             while True:
                 # Drain queue and yield tweets
                 processed_any = False
 
                 while not tweet_queue.empty():
-                    tweet = tweet_queue.get_nowait()
+                    item = tweet_queue.get_nowait()
+
+                    # Check for end-of-timeline signal
+                    if item is None:
+                        _debug("Received end-of-timeline signal from API")
+                        end_of_timeline = True
+                        continue
+
                     processed_any = True
                     yielded_count += 1
-                    yield tweet
+                    yield item
 
                     if limit is not None and yielded_count >= limit:
                         _debug(f"Reached limit of {limit}")
                         return
+
+                # Stop if API indicated end of timeline
+                if end_of_timeline:
+                    _debug("End of timeline reached (API returned 0 tweets)")
+                    return
 
                 if processed_any:
                     consecutive_empty = 0
@@ -309,15 +508,29 @@ class PatchrightBackend(TimelineBackend):
                     consecutive_empty += 1
                     _debug(f"No tweets in queue, consecutive_empty: {consecutive_empty}")
 
-                # Stop if no new content after multiple scrolls
+                # Stop if no new content after multiple scrolls (fallback)
                 if consecutive_empty >= max_consecutive_empty:
                     _debug("Max consecutive empty reached, stopping")
                     return
 
-                # Human-like scroll with random amount
-                scroll_amount = random.uniform(0.6, 0.9)
-                _debug(f"Scrolling ({scroll_amount:.0%} of viewport)...")
-                await page.evaluate(f"window.scrollBy(0, window.innerHeight * {scroll_amount})")
+                # Scroll to bottom of timeline to trigger infinite scroll
+                # Twitter loads more content when you reach near the bottom
+                _debug("Scrolling to bottom of timeline...")
+                scroll_script = """
+                    () => {
+                        // Find the timeline container and scroll within it, or use window
+                        const timeline = document.querySelector('[data-testid="primaryColumn"]');
+                        if (timeline) {
+                            // Scroll the main timeline to bottom
+                            window.scrollTo(0, document.body.scrollHeight);
+                        } else {
+                            window.scrollTo(0, document.body.scrollHeight);
+                        }
+                        return document.body.scrollHeight;
+                    }
+                """
+                scroll_height = await page.evaluate(scroll_script)
+                _debug(f"Scrolled to height: {scroll_height}")
 
                 # Human-like delay to wait for content to load
                 delay = _random_delay(2.5, 4.5)
@@ -427,37 +640,51 @@ class PatchrightBackend(TimelineBackend):
                 _debug(f"Found {len(entries)} entries in instruction")
 
                 for entry in entries:
-                    tweet = self._extract_tweet_from_entry(entry)
-                    if tweet:
-                        tweets.append(tweet)
+                    entry_id = entry.get("entryId", "")
+                    _debug(f"  Entry: {entry_id[:50]}")
+                    extracted = self._extract_tweets_from_entry(entry)
+                    tweets.extend(extracted)
 
         except Exception as e:
             _debug(f"Exception in _extract_tweets_from_response: {e}")
 
         return tweets
 
-    def _extract_tweet_from_entry(self, entry: dict[str, Any]) -> InternalTweet | None:
+    def _extract_tweets_from_entry(self, entry: dict[str, Any]) -> list[InternalTweet]:
         """
-        Extract single tweet from timeline entry.
+        Extract tweets from timeline entry.
+
+        For TimelineTimelineModule entries (thread conversations), extracts ALL tweets
+        and marks them as thread starter/continuation appropriately.
 
         Args:
             entry: Timeline entry dict
 
         Returns:
-            InternalTweet or None if not a valid tweet
+            List of InternalTweet objects (may be empty)
         """
         try:
             entry_id = entry.get("entryId", "")
 
             # Skip cursor entries
             if entry_id.startswith("cursor-"):
-                return None
+                return []
 
-            # Navigate to tweet result
-            item_content = entry.get("content", {}).get("itemContent", {})
+            content = entry.get("content", {})
+            content_type = content.get("entryType") or content.get("__typename", "")
 
-            if item_content.get("itemType") != "TimelineTweet":
-                return None
+            # Handle TimelineTimelineModule (for profile with conversation threads)
+            if content_type == "TimelineTimelineModule":
+                return self._extract_tweets_from_module(content)
+
+            # Handle single tweet entry (TimelineTimelineItem)
+            item_content = content.get("itemContent", {})
+            item_type = item_content.get("itemType") or item_content.get("__typename", "")
+
+            _debug(f"    content_type={content_type}, item_type={item_type}")
+
+            if item_type != "TimelineTweet":
+                return []
 
             tweet_results = item_content.get("tweet_results", {})
             result = tweet_results.get("result", {})
@@ -465,16 +692,68 @@ class PatchrightBackend(TimelineBackend):
             # Skip tombstone (deleted) tweets
             typename = result.get("__typename")
             if typename == "TweetTombstone":
-                return None
+                _debug(f"    Skipping tombstone tweet")
+                return []
 
             # Handle TweetWithVisibilityResults wrapper
             if typename == "TweetWithVisibilityResults":
                 result = result.get("tweet", {})
 
-            return self._convert_graphql_tweet(result)
+            tweet = self._convert_graphql_tweet(result)
+            return [tweet] if tweet else []
 
-        except Exception:
-            return None
+        except Exception as e:
+            _debug(f"    Exception extracting tweet: {e}")
+            return []
+
+    def _extract_tweets_from_module(
+        self, content: dict[str, Any]
+    ) -> list[InternalTweet]:
+        """
+        Extract all tweets from a TimelineTimelineModule (conversation thread).
+
+        Marks the first tweet as thread_starter if there are multiple tweets
+        from the same user in the conversation.
+
+        Args:
+            content: The module content dict
+
+        Returns:
+            List of tweets with thread flags set appropriately
+        """
+        tweets: list[InternalTweet] = []
+        items = content.get("items", [])
+
+        if not items:
+            return []
+
+        # Extract all tweets from the module
+        for item in items:
+            item_content = item.get("item", {}).get("itemContent", {})
+            if not item_content:
+                item_content = item.get("itemContent", {})
+
+            tweet = self._extract_tweet_from_item_content(item_content)
+            if tweet:
+                tweets.append(tweet)
+
+        # If we have multiple tweets from the same user, mark as thread
+        if len(tweets) > 1:
+            # Get the first tweet's user
+            first_user_id = tweets[0].user_id
+            first_conv_id = tweets[0].conversation_id
+
+            # Check if this is a self-thread (multiple tweets from same user)
+            same_user_tweets = [t for t in tweets if t.user_id == first_user_id]
+
+            if len(same_user_tweets) > 1:
+                # Mark the first tweet (thread starter)
+                for tweet in tweets:
+                    if tweet.id == first_conv_id and tweet.user_id == first_user_id:
+                        tweet.is_thread_starter = True
+                        _debug(f"    Marked {tweet.id} as thread_starter")
+
+        return tweets
 
     def _convert_graphql_tweet(self, tweet_data: dict[str, Any]) -> InternalTweet:
         """
@@ -510,10 +789,17 @@ class PatchrightBackend(TimelineBackend):
         # Get screen_name from user_core (preferred) or user_legacy (fallback)
         screen_name = user_core.get("screen_name") or user_legacy.get("screen_name", "")
 
+        # Get user ID
+        user_id = user_results.get("rest_id", legacy.get("user_id_str", ""))
+
+        # Detect self-thread: tweet is a reply to the user's own tweet
+        in_reply_to_user_id = legacy.get("in_reply_to_user_id_str")
+        is_self_thread = bool(in_reply_to_user_id and in_reply_to_user_id == user_id)
+
         return InternalTweet(
             id=legacy.get("id_str", tweet_data.get("rest_id", "")),
             created_at=created_at,
-            user_id=user_results.get("rest_id", legacy.get("user_id_str", "")),
+            user_id=user_id,
             screen_name=screen_name,
             text=legacy.get("full_text", ""),
             conversation_id=legacy.get("conversation_id_str"),
@@ -521,5 +807,6 @@ class PatchrightBackend(TimelineBackend):
             is_retweet=is_retweet,
             is_quote=is_quote,
             has_media=has_media,
+            is_self_thread=is_self_thread,
             raw=tweet_data,
         )

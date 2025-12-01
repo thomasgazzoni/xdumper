@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 class TimelineType(str, Enum):
     LIST = "list"
     USER = "user"
+    THREAD = "thread"
 
 
 @dataclass
@@ -16,15 +17,18 @@ class TimelineTarget:
     """Parsed timeline target from a URL."""
 
     type: TimelineType
-    key: str  # e.g. "list:1409181262510690310" or "user:elonmusk"
+    key: str  # e.g. "list:123", "user:elonmusk", or "thread:123"
     url: str
     list_id: str | None = None
     screen_name: str | None = None
+    tweet_id: str | None = None
 
 
 LIST_PATH_RE = re.compile(r"^/i/lists/(?P<list_id>\d+)$")
 # Match user profile: /@username or /username (not /i/..., /settings, etc.)
 USER_PATH_RE = re.compile(r"^/@?(?P<screen_name>[A-Za-z0-9_]{1,15})(?:/(?:with_replies)?)?$")
+# Match tweet/status URL: /username/status/tweet_id
+STATUS_PATH_RE = re.compile(r"^/@?(?P<screen_name>[A-Za-z0-9_]{1,15})/status/(?P<tweet_id>\d+)$")
 # Reserved paths that are NOT user profiles
 RESERVED_PATHS = {"i", "home", "explore", "search", "notifications", "messages", "settings", "compose", "intent"}
 
@@ -39,6 +43,7 @@ def parse_timeline_url(url: str) -> TimelineTarget:
       - https://x.com/{username}
       - https://x.com/@{username}
       - https://twitter.com/{username}
+      - https://x.com/{username}/status/{tweet_id}
 
     Args:
         url: The X/Twitter URL to parse
@@ -66,6 +71,19 @@ def parse_timeline_url(url: str) -> TimelineTarget:
             key=f"list:{list_id}",
             url=url,
             list_id=list_id,
+        )
+
+    # Check for status/tweet URL (before user profile, since it's more specific)
+    m = STATUS_PATH_RE.match(path)
+    if m:
+        tweet_id = m.group("tweet_id")
+        screen_name = m.group("screen_name")
+        return TimelineTarget(
+            type=TimelineType.THREAD,
+            key=f"thread:{tweet_id}",
+            url=url,
+            tweet_id=tweet_id,
+            screen_name=screen_name,
         )
 
     # Check for user profile URL

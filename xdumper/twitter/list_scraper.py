@@ -63,5 +63,10 @@ async def scrape_target(
             raise ValueError("User target missing screen_name")
         async for tweet in backend.iter_user_timeline(target.screen_name, limit=limit):
             yield tweet
+    elif target.type is TimelineType.THREAD:
+        if not target.tweet_id:
+            raise ValueError("Thread target missing tweet_id")
+        async for tweet in backend.iter_thread(target.tweet_id, limit=limit):
+            yield tweet
     else:
         raise ValueError(f"Unsupported timeline type: {target.type}")

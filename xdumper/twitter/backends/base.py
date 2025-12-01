@@ -25,6 +25,8 @@ class InternalTweet:
     is_retweet: bool
     is_quote: bool
     has_media: bool
+    is_self_thread: bool = False  # True if this is a reply to the user's own tweet
+    is_thread_starter: bool = False  # True if this tweet starts a thread (has self-replies)
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -81,5 +83,25 @@ class TimelineBackend(ABC):
 
         Returns:
             Numeric user ID as string
+        """
+        ...
+
+    @abstractmethod
+    def iter_thread(
+        self,
+        tweet_id: str,
+        limit: int | None = None,
+    ) -> AsyncIterator[InternalTweet]:
+        """
+        Yield tweets from a conversation thread, oldest first.
+
+        Fetches the full conversation/thread for a given tweet ID.
+
+        Args:
+            tweet_id: The tweet ID to fetch the thread for
+            limit: Maximum number of tweets to yield (None = no limit)
+
+        Yields:
+            InternalTweet objects in chronological order (oldest first)
         """
         ...
