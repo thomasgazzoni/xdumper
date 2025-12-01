@@ -796,12 +796,21 @@ class PatchrightBackend(TimelineBackend):
         in_reply_to_user_id = legacy.get("in_reply_to_user_id_str")
         is_self_thread = bool(in_reply_to_user_id and in_reply_to_user_id == user_id)
 
+        # Get full text - use note_tweet for long tweets ("show more"), fall back to legacy
+        note_tweet = tweet_data.get("note_tweet", {})
+        note_tweet_text = (
+            note_tweet.get("note_tweet_results", {})
+            .get("result", {})
+            .get("text")
+        )
+        text = note_tweet_text or legacy.get("full_text", "")
+
         return InternalTweet(
             id=legacy.get("id_str", tweet_data.get("rest_id", "")),
             created_at=created_at,
             user_id=user_id,
             screen_name=screen_name,
-            text=legacy.get("full_text", ""),
+            text=text,
             conversation_id=legacy.get("conversation_id_str"),
             in_reply_to_id=legacy.get("in_reply_to_status_id_str"),
             is_retweet=is_retweet,
